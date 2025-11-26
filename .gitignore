@@ -1,0 +1,128 @@
+# GENERALE & OS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+*~
+*.swp
+*.swo
+
+# VS CODE (IDE)
+.vscode/
+.history/
+
+# PYTHON (Backend/AI)
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Ambienti virtuali (Nomi comuni)
+# Assicurati di usare uno di questi nomi per il tuo venv
+venv/
+env/
+.env/
+.venv/
+
+# Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Jupyter Notebooks (comuni nei progetti AI)
+.ipynb_checkpoints
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+
+# FLUTTER / DART (Frontend)
+.dart_tool/
+.packages
+.pub/
+build/
+
+
+# File di log e crash
+pubspec.lock 
+*.log
+
+# --- Android Specifici ---
+# File di configurazione locali (es. percorsi SDK)
+android/local.properties
+# Keystore file per firmare l'app (NON COMMITTARLI MAI)
+*.jks
+*.keystore
+android/key.properties
+# Cartelle di build native Android
+android/app/build/
+android/.gradle/
+
+# --- iOS / macOS Specifici ---
+ios/.symlinks/
+ios/Pods/
+ios/Flutter/Flutter.framework/
+ios/Flutter/App.framework/
+ios/Flutter/Generated.xcconfig
+ios/Flutter/app.flx
+ios/Flutter/app.zip
+ios/ServiceDefinitions.json
+macos/Flutter/ephemeral/
+
+# --- Web Specifici (Se buildi per web) ---
+web/build/
+
+
+.env
+.env.*
+!.env.example
+
+# DATI SCARICATI E MODELLI
+scraped_data/
+datasets/
+
+# Estensioni file dati comuni da ignorare se fuori cartella specifica
+*.csv
+*.jsonl
+*.parquet
+
+# Modelli AI salvati (possono essere enormi)
+*.pt
+*.pth
+*.h5
+*.onnx
+models_output/
+
+# Database locali temporanei (se usati per test al posto di Mongo)
+*.sqlite3
+*.db
+
