@@ -307,7 +307,7 @@ def main():
         raise ValueError("HF_API_KEY environment variable not set.")
     roberta_classify_from_csv("./backend/data/yelp_dataset.csv", api=API_KEY)
 
-    downstream_model= DownstreamModel()
+    downstream_model = DownstreamModel()
     downstream_model.train(
         data=pd.read_csv("./backend/data/yelp_dataset_classified.csv"),
         save_path="./backend/data/trained/downstream_rf_model.joblib"
