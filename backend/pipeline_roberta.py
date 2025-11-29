@@ -6,6 +6,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.model_selection import RandomizedSearchCV
+from sklearn.ensemble import RandomForestClassifier
 
 from transformers import AutoModelForSequenceClassification
 from transformers import AutoTokenizer
@@ -24,7 +25,7 @@ except ImportError:
 
 
 class RobertaOpenAIDetector:
-    def __init__(self):
+    def __init__(self, api_key: str = None):
         self.pipe = pipeline(
             "text-classification",
             model="openai-community/roberta-base-openai-detector",
@@ -117,6 +118,7 @@ class OtisAntiSpamAI:
             )
         return results
 
+
 class DownstreamModel:
     """
     Trains, saves, loads, and uses a RandomForest classifier based on transformer model outputs.
@@ -143,7 +145,6 @@ class DownstreamModel:
             plt.savefig(plot_path)
         if show_plot:
             # WARNING: plt.show() may block execution in non-interactive environments.
-        if show_plot:
             plt.show()
         plt.close()
         features = [
@@ -195,7 +196,6 @@ class DownstreamModel:
 
         return grid
 
-
     def save(self, model, path: str) -> None:
         best_rf_model = model.best_estimator_
         directory = os.path.dirname(path)
@@ -224,29 +224,25 @@ class DownstreamModel:
         model = self.load(model_file_path)
         predict_data = pd.read_csv(roberta_output_file_path)
 
-        rows = []
-        for i in range(len(predict_data)):
-            rows.append(
-                {
-                    "id_review": predict_data.loc[i, "id_review"],
-                    "id_room": predict_data.loc[i, "id_room"],
-                    "legit": model.predict(
-                        [
-                            [
-                                predict_data.loc[i, "fake"],
-                                predict_data.loc[i, "real"],
-                                predict_data.loc[i, "negative"],
-                                predict_data.loc[i, "neutral"],
-                                predict_data.loc[i, "positive"],
-                                predict_data.loc[i, "spam"],
-                                predict_data.loc[i, "no_spam"],
-                            ]
-                        ]
-                    )[0],
-                }
-            )
+        features = [
+            "fake",
+            "real",
+            "negative",
+            "neutral",
+            "positive",
+            "spam",
+            "no_spam",
+        ]
+        X_pred = predict_data[features]
+        y_pred = model.predict(X_pred)
 
-        frame = pd.DataFrame(rows, columns=["id_review", "id_room", "legit"])
+        frame = pd.DataFrame(
+            {
+                "id_review": predict_data["id_review"],
+                "id_room": predict_data["id_room"],
+                "legit": y_pred,
+            }
+        )
 
         output_path = roberta_output_file_path.replace(
             ".csv", "_predicted.csv"
@@ -284,37 +280,20 @@ def roberta_classify_from_csv(file_path: str, api) -> None:
     print("Processing spam detection in batch...")
     spam_results = otis_spam_detector.classify_batch(df["review"].tolist())
     print("Spam detection completed.")
-    rows = []
-    for i in range(len(df)):
-        rows.append(
-            {
-                "id_review": df.loc[i, "id_review"],
-                "review": df.loc[i, "review"],
-                "fake": list_detections[i]["fake"],
-                "real": list_detections[i]["real"],
-                "negative": list_sentiments[i]["negative"],
-                "neutral": list_sentiments[i]["neutral"],
-                "positive": list_sentiments[i]["positive"],
-                "spam": spam_results[i]["spam"],
-                "no_spam": spam_results[i]["no_spam"],
-                "legit": True if int(df.loc[i, "legit"]) == 1 else False,
-            }
-        )
 
     frame = pd.DataFrame(
-        rows,
-        columns=[
-            "id_review",
-            "review",
-            "fake",
-            "real",
-            "negative",
-            "neutral",
-            "positive",
-            "spam",
-            "no_spam",
-            "legit",
-        ],
+        {
+            "id_review": df["id_review"],
+            "review": df["review"],
+            "fake": [d["fake"] for d in list_detections],
+            "real": [d["real"] for d in list_detections],
+            "negative": [s["negative"] for s in list_sentiments],
+            "neutral": [s["neutral"] for s in list_sentiments],
+            "positive": [s["positive"] for s in list_sentiments],
+            "spam": [s["spam"] for s in spam_results],
+            "no_spam": [s["no_spam"] for s in spam_results],
+            "legit": [True if int(v) == 1 else False for v in df["legit"]],
+        }
     )
 
     output_path = file_path.replace(".csv", "_classified.csv")
@@ -327,7 +306,6 @@ def main():
         raise ValueError("HF_API_KEY environment variable not set.")
     roberta_classify_from_csv("./backend/data/yelp_dataset.csv", api=API_KEY)
     downstream_model = DownstreamModel()
-    downstream_model = DownstreamModel()
     downstream_model.train(
         data=pd.read_csv("./backend/data/yelp_dataset_classified.csv"),
         save_path="./backend/data/trained/downstream_rf_model.joblib"
@@ -335,7 +313,7 @@ def main():
 
     roberta_classify_from_csv("./backend/data/reviews_en_clean.csv", api=API_KEY)
 
-    downstream_model.predict_from_csv( 
+    downstream_model.predict_from_csv(
         model_file_path="./backend/data/trained/downstream_rf_model.joblib",
         roberta_output_file_path="./backend/data/reviews_en_clean_classified.csv",
         train_file_path="./backend/data/yelp_dataset_classified.csv"
