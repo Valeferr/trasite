@@ -162,27 +162,36 @@ class DownstreamModel:
     This class is designed to work with features extracted from transformer models (such as fake/real, sentiment, and spam scores)
     and provides methods to train a RandomForest classifier, save and load the trained model, and make predictions.
     """
+    def plot(self, data: pd.DataFrame, plot_path: str = None) -> None:
+        vc = data["legit"].value_counts()
+        vc.plot(kind="bar")
+        if plot_path is not None:
+            plt.savefig(plot_path)
+        plt.show()
+        
+        plt.close()
+
     def train(self, data: pd.DataFrame, save_path: str, show_plot: bool = False, plot_path: str = None) -> RandomizedSearchCV:
         data = data.copy()
         class_counts = data["legit"].value_counts()
         if len(class_counts) == 2:
             minority_class = class_counts.idxmin()
             majority_class = class_counts.idxmax()
-            n_min = class_counts.min()
+            n_minority = class_counts[minority_class]
+            n_majority = class_counts[majority_class]
+            target_majority = max(int(n_majority * 0.8), n_minority)
+            target_majority = min(target_majority, n_majority)
             minority_df = data[data["legit"] == minority_class]
-            majority_df = data[data["legit"] == majority_class].sample(
-                n=n_min, random_state=42
-            )
+            majority_df = data[data["legit"] == majority_class]
+            if target_majority < n_majority:
+                majority_df = majority_df.sample(n=target_majority, random_state=42)
             data = pd.concat([minority_df, majority_df]).sample(frac=1, random_state=42).reset_index(drop=True)
+
         np.random.seed(42)
-        vc = data["legit"].value_counts()
-        vc.plot(kind="bar")
-        if plot_path is not None:
-            plt.savefig(plot_path)
+
         if show_plot:
-            # WARNING: plt.show() may block execution in non-interactive environments.
-            plt.show()
-        plt.close()
+            self.plot(data, plot_path=plot_path)
+
         features = [
             "fake",
             "real",
@@ -296,9 +305,6 @@ def roberta_classify_from_csv(file_path: str, api) -> None:
     if "id_review" not in df.columns:
         raise ValueError("CSV file must contain an 'id_review' column.")
 
-    if "legit" not in df.columns:
-        raise ValueError("CSV file must contain a 'legit' column.")
-
     def_length = len(df)
     roberta_detector = RobertaOpenAIDetector(api_key=api)
     sentiment_analyzer = RobertaSentimentAnalyzer()
@@ -332,9 +338,14 @@ def roberta_classify_from_csv(file_path: str, api) -> None:
             "positive": [s["positive"] for s in list_sentiments],
             "spam": [s["spam"] for s in spam_results],
             "no_spam": [s["no_spam"] for s in spam_results],
-            "legit": [1 if int(v) == 1 else 0 for v in df["legit"]],
         }
     )
+
+    if "legit" in df.columns:
+        frame["legit"] = [True if l == 1 else False for l in df["legit"]]
+
+    if "id_room" in df.columns:
+        frame["id_room"] = df["id_room"]
 
     output_path = file_path.replace(".csv", "_classified.csv")
     frame.to_csv(output_path, index=False)
@@ -348,7 +359,8 @@ def main():
     downstream_model = DownstreamModel()
     downstream_model.train(
         data=pd.read_csv("./backend/data/yelp_dataset_classified.csv"),
-        save_path="./backend/data/trained/downstream_rf_model.joblib"
+        save_path="./backend/data/trained/downstream_rf_model.joblib",
+        show_plot=True
     )
 
     roberta_classify_from_csv("./backend/data/reviews_en_clean.csv", api=API_KEY)
