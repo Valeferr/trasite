@@ -124,12 +124,25 @@ class DownstreamModel:
     This class is designed to work with features extracted from transformer models (such as fake/real, sentiment, and spam scores)
     and provides methods to train a RandomForest classifier, save and load the trained model, and make predictions.
     """
-class DownstreamModel:
     def train(self, data: pd.DataFrame, save_path: str, show_plot: bool = False, plot_path: str = None) -> RandomizedSearchCV:
+        """
+        Train a Random Forest model on the provided data.
+
+        Parameters:
+            data (pd.DataFrame): The input data for training.
+            save_path (str): Path to save the trained model.
+            show_plot (bool, optional): If True, display the histogram plot interactively. Defaults to False.
+                WARNING: plt.show() may block execution in non-interactive environments.
+            plot_path (str, optional): If provided, save the histogram plot to this file path.
+        Returns:
+            RandomizedSearchCV: The fitted model.
+        """
         np.random.seed(42)
         ax = data.hist(column="legit")
         if plot_path is not None:
             plt.savefig(plot_path)
+        if show_plot:
+            # WARNING: plt.show() may block execution in non-interactive environments.
         if show_plot:
             plt.show()
         plt.close()
