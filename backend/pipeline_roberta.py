@@ -23,7 +23,7 @@ except ImportError:
 
 
 class RobertaOpenAIDetector:
-    def __init__(self, api_key: str):
+    def __init__(self):
         self.pipe = pipeline(
             "text-classification",
             model="openai-community/roberta-base-openai-detector",
