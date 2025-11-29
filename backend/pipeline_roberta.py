@@ -5,7 +5,7 @@ import torch
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import RandomizedSearchCV
 
 from transformers import AutoModelForSequenceClassification
 from transformers import AutoTokenizer
