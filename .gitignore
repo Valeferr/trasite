@@ -126,3 +126,4 @@ models_output/
 *.sqlite3
 *.db
 
+backend/data/trained/downstream_rf_model.joblib

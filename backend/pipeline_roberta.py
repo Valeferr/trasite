@@ -2,7 +2,10 @@ import os
 import joblib
 import pandas as pd
 import torch
-
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+import pandas as pd
+import numpy as np
 from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
 from sklearn.ensemble import RandomForestClassifier
 
@@ -14,6 +17,7 @@ from huggingface_hub import InferenceClient
 
 try:
     from transformers import logging
+    mpl.use("module://mpl_ascii")
     logging.set_verbosity_error()
 except ImportError:
     pass
@@ -116,6 +120,9 @@ class OtisAntiSpamAI:
 
 class DownstreamModel:
     def train(self, data: pd.DataFrame, save_path: str) -> RandomizedSearchCV:
+        np.random.seed(42)
+        data.hist(column="legit")
+        plt.show()
         features = [
             "fake",
             "real",
@@ -158,6 +165,7 @@ class DownstreamModel:
         print("Random Forest model trained.")
         print(f"Best parameters: {grid.best_params_}")
         print(f"Best cross-validation accuracy: {grid.best_score_}")
+        print(f'CV results: {grid.cv_results_}')
         print(f"Feature importances: {grid.best_estimator_.feature_importances_}")
         print("Saving the trained model...")
         self.save(grid, save_path)
@@ -227,7 +235,6 @@ class DownstreamModel:
 
 def roberta_classify_from_csv(file_path: str, api) -> None:
     df = pd.read_csv(file_path, nrows=100000)
-    df.hist(column="legit")
     if "review" not in df.columns:
         raise ValueError("CSV file must contain a 'review' column.")
 
@@ -251,8 +258,9 @@ def roberta_classify_from_csv(file_path: str, api) -> None:
         list_detections.append(roberta_detector.classify(review))
         list_sentiments.append(sentiment_analyzer.analyze(review))
 
+    print("Processing spam detection in batch...")
     spam_results = otis_spam_detector.classify_batch(df["review"].tolist())
-
+    print("Spam detection completed.")
     rows = []
     for i in range(len(df)):
         rows.append(
