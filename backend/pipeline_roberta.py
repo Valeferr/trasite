@@ -119,10 +119,14 @@ class OtisAntiSpamAI:
 
 
 class DownstreamModel:
-    def train(self, data: pd.DataFrame, save_path: str) -> RandomizedSearchCV:
+    def train(self, data: pd.DataFrame, save_path: str, show_plot: bool = False, plot_path: str = None) -> RandomizedSearchCV:
         np.random.seed(42)
-        data.hist(column="legit")
-        plt.show()
+        ax = data.hist(column="legit")
+        if plot_path is not None:
+            plt.savefig(plot_path)
+        if show_plot:
+            plt.show()
+        plt.close()
         features = [
             "fake",
             "real",
