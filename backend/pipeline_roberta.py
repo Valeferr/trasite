@@ -19,6 +19,8 @@ try:
     mpl.use("module://mpl_ascii")
     logging.set_verbosity_error()
 except ImportError:
+    # Optional: If transformers.logging or mpl_ascii backend is not available,
+    # continue without enhanced logging or ASCII plotting.
     pass
 
 
