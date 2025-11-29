@@ -117,7 +117,13 @@ class OtisAntiSpamAI:
             )
         return results
 
+class DownstreamModel:
+    """
+    Trains, saves, loads, and uses a RandomForest classifier based on transformer model outputs.
 
+    This class is designed to work with features extracted from transformer models (such as fake/real, sentiment, and spam scores)
+    and provides methods to train a RandomForest classifier, save and load the trained model, and make predictions.
+    """
 class DownstreamModel:
     def train(self, data: pd.DataFrame, save_path: str, show_plot: bool = False, plot_path: str = None) -> RandomizedSearchCV:
         np.random.seed(42)
