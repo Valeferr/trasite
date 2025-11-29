@@ -52,6 +52,36 @@ class RobertaOpenAIDetector:
             "real": real,
         }
 
+    def classify_batch(self, texts, batch_size: int = 32):
+        texts = list(texts)
+        total = len(texts)
+        results = []
+        for start in range(0, total, batch_size):
+            end = min(start + batch_size, total)
+            print(f"Processing fake/real {end}/{total}")
+            batch = texts[start:end]
+            outputs = self.pipe(
+                batch,
+                truncation=True,
+                max_length=512,
+            )
+            for result in outputs:
+                label = str(result["label"]).lower()
+                score = float(result["score"])
+                if "real" in label:
+                    real = score
+                    fake = 1.0 - score
+                else:
+                    fake = score
+                    real = 1.0 - score
+                results.append(
+                    {
+                        "fake": fake,
+                        "real": real,
+                    }
+                )
+        return results
+
 
 class RobertaSentimentAnalyzer:
     def __init__(self):
@@ -101,21 +131,27 @@ class OtisAntiSpamAI:
             "no_spam": x["score"],
         }
 
-    def classify_batch(self, texts):
-        outputs = self.pipe(
-            list(texts),
-            truncation=True,
-            max_length=512,
-        )
+    def classify_batch(self, texts, batch_size: int = 32):
+        texts = list(texts)
+        total = len(texts)
         results = []
-        for out in outputs:
-            score = out["score"]
-            results.append(
-                {
-                    "spam": 1 - score,
-                    "no_spam": score,
-                }
+        for start in range(0, total, batch_size):
+            end = min(start + batch_size, total)
+            print(f"Processing spam {end}/{total}")
+            batch = texts[start:end]
+            outputs = self.pipe(
+                batch,
+                truncation=True,
+                max_length=512,
             )
+            for out in outputs:
+                score = out["score"]
+                results.append(
+                    {
+                        "spam": 1 - score,
+                        "no_spam": score,
+                    }
+                )
         return results
 
 
@@ -127,20 +163,20 @@ class DownstreamModel:
     and provides methods to train a RandomForest classifier, save and load the trained model, and make predictions.
     """
     def train(self, data: pd.DataFrame, save_path: str, show_plot: bool = False, plot_path: str = None) -> RandomizedSearchCV:
-        """
-        Train a Random Forest model on the provided data.
-
-        Parameters:
-            data (pd.DataFrame): The input data for training.
-            save_path (str): Path to save the trained model.
-            show_plot (bool, optional): If True, display the histogram plot interactively. Defaults to False.
-                WARNING: plt.show() may block execution in non-interactive environments.
-            plot_path (str, optional): If provided, save the histogram plot to this file path.
-        Returns:
-            RandomizedSearchCV: The fitted model.
-        """
+        data = data.copy()
+        class_counts = data["legit"].value_counts()
+        if len(class_counts) == 2:
+            minority_class = class_counts.idxmin()
+            majority_class = class_counts.idxmax()
+            n_min = class_counts.min()
+            minority_df = data[data["legit"] == minority_class]
+            majority_df = data[data["legit"] == majority_class].sample(
+                n=n_min, random_state=42
+            )
+            data = pd.concat([minority_df, majority_df]).sample(frac=1, random_state=42).reset_index(drop=True)
         np.random.seed(42)
-        ax = data.hist(column="legit")
+        vc = data["legit"].value_counts()
+        vc.plot(kind="bar")
         if plot_path is not None:
             plt.savefig(plot_path)
         if show_plot:
@@ -253,7 +289,7 @@ class DownstreamModel:
 
 
 def roberta_classify_from_csv(file_path: str, api) -> None:
-    df = pd.read_csv(file_path, nrows=100000)
+    df = pd.read_csv(file_path, nrows=150000)
     if "review" not in df.columns:
         raise ValueError("CSV file must contain a 'review' column.")
 
@@ -268,17 +304,21 @@ def roberta_classify_from_csv(file_path: str, api) -> None:
     sentiment_analyzer = RobertaSentimentAnalyzer()
     otis_spam_detector = OtisAntiSpamAI(api_key=api)
 
-    list_detections = []
-    list_sentiments = []
+    texts = df["review"].tolist()
 
-    for i, row in df.iterrows():
-        print(f"Processing review {i + 1}/{def_length}")
-        review = row["review"]
-        list_detections.append(roberta_detector.classify(review))
-        list_sentiments.append(sentiment_analyzer.analyze(review))
+    print("Processing fake/real detection in batch...")
+    list_detections = roberta_detector.classify_batch(texts)
+    print("Fake/real detection completed.")
+
+    print("Processing sentiment analysis...")
+    list_sentiments = []
+    for i, text in enumerate(texts):
+        print(f"Processing sentiment {i + 1}/{def_length}")
+        list_sentiments.append(sentiment_analyzer.analyze(text))
+    print("Sentiment analysis completed.")
 
     print("Processing spam detection in batch...")
-    spam_results = otis_spam_detector.classify_batch(df["review"].tolist())
+    spam_results = otis_spam_detector.classify_batch(texts)
     print("Spam detection completed.")
 
     frame = pd.DataFrame(
@@ -292,7 +332,7 @@ def roberta_classify_from_csv(file_path: str, api) -> None:
             "positive": [s["positive"] for s in list_sentiments],
             "spam": [s["spam"] for s in spam_results],
             "no_spam": [s["no_spam"] for s in spam_results],
-            "legit": [True if int(v) == 1 else False for v in df["legit"]],
+            "legit": [1 if int(v) == 1 else 0 for v in df["legit"]],
         }
     )
 
