@@ -19,16 +19,16 @@ try:
     mpl.use("module://mpl_ascii")
     logging.set_verbosity_error()
 except ImportError:
-    # Optional: If transformers.logging or mpl_ascii backend is not available,
-    # continue without enhanced logging or ASCII plotting.
     pass
 
 
 class RobertaOpenAIDetector:
     def __init__(self, api_key: str = None):
+        device = 0 if torch.cuda.is_available() else -1
         self.pipe = pipeline(
             "text-classification",
             model="openai-community/roberta-base-openai-detector",
+            device=device
         )
 
     def classify(self, text: str) -> dict:
@@ -64,6 +64,7 @@ class RobertaOpenAIDetector:
                 batch,
                 truncation=True,
                 max_length=512,
+                batch_size=batch_size
             )
             for result in outputs:
                 label = str(result["label"]).lower()
@@ -85,11 +86,13 @@ class RobertaOpenAIDetector:
 
 class RobertaSentimentAnalyzer:
     def __init__(self):
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model_name = "cardiffnlp/twitter-roberta-base-sentiment"
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         self.model = AutoModelForSequenceClassification.from_pretrained(
             self.model_name
-        )
+        ).to(self.device)
+        self.model.eval()
 
     def analyze(self, text: str) -> dict:
         encoded_input = self.tokenizer(
@@ -97,10 +100,10 @@ class RobertaSentimentAnalyzer:
             return_tensors="pt",
             truncation=True,
             max_length=512,
-        )
+        ).to(self.device)
         with torch.no_grad():
             output = self.model(**encoded_input)
-        scores = output.logits[0].detach().numpy()
+        scores = output.logits[0].detach().cpu().numpy()
         scores = softmax(scores)
         return {
             "negative": float(scores[0]),
@@ -108,9 +111,51 @@ class RobertaSentimentAnalyzer:
             "positive": float(scores[2]),
         }
 
+    def analyze_batch(self, texts, batch_size: int = 32) -> list:
+        texts = list(texts)
+        total = len(texts)
+        
+        indexed_texts = sorted(enumerate(texts), key=lambda x: len(x[1]))
+        sorted_texts = [t for i, t in indexed_texts]
+        original_indices = [i for i, t in indexed_texts]
+        
+        final_results = [None] * total
+
+        for start in range(0, total, batch_size):
+            end = min(start + batch_size, total)
+            print(f"Processing sentiment {end}/{total}")
+            
+            batch_texts = sorted_texts[start:end]
+            batch_indices = original_indices[start:end]
+            
+            encoded_input = self.tokenizer(
+                batch_texts,
+                return_tensors="pt",
+                truncation=True,
+                padding=True,
+                max_length=512,
+            ).to(self.device)
+            
+            with torch.no_grad():
+                output = self.model(**encoded_input)
+            
+            scores_batch = output.logits.detach().cpu().numpy()
+            scores_batch = softmax(scores_batch, axis=1)
+
+            for i, scores in enumerate(scores_batch):
+                original_idx = batch_indices[i]
+                final_results[original_idx] = {
+                    "negative": float(scores[0]),
+                    "neutral": float(scores[1]),
+                    "positive": float(scores[2]),
+                }
+        
+        return final_results
+
 
 class OtisAntiSpamAI:
     def __init__(self, api_key: str):
+        device = 0 if torch.cuda.is_available() else -1
         self.client = InferenceClient(
             provider="hf-inference",
             api_key=api_key,
@@ -118,6 +163,7 @@ class OtisAntiSpamAI:
         self.pipe = pipeline(
             "text-classification",
             model="Titeiiko/OTIS-Official-Spam-Model",
+            device=device
         )
 
     def classify(self, text: str) -> dict:
@@ -143,6 +189,7 @@ class OtisAntiSpamAI:
                 batch,
                 truncation=True,
                 max_length=512,
+                batch_size=batch_size
             )
             for out in outputs:
                 score = out["score"]
@@ -156,12 +203,6 @@ class OtisAntiSpamAI:
 
 
 class DownstreamModel:
-    """
-    Trains, saves, loads, and uses a RandomForest classifier based on transformer model outputs.
-
-    This class is designed to work with features extracted from transformer models (such as fake/real, sentiment, and spam scores)
-    and provides methods to train a RandomForest classifier, save and load the trained model, and make predictions.
-    """
     def plot(self, data: pd.DataFrame, plot_path: str = None) -> None:
         vc = data["legit"].value_counts()
         vc.plot(kind="bar")
@@ -179,7 +220,7 @@ class DownstreamModel:
             majority_class = class_counts.idxmax()
             n_minority = class_counts[minority_class]
             n_majority = class_counts[majority_class]
-            target_majority = max(int(n_majority * 0.8), n_minority)
+            target_majority = max(int(n_majority * 0.7), n_minority)
             target_majority = min(target_majority, n_majority)
             minority_df = data[data["legit"] == minority_class]
             majority_df = data[data["legit"] == majority_class]
@@ -204,7 +245,7 @@ class DownstreamModel:
         X = data[features]
         y = data["legit"]
 
-        rf_grid = RandomForestClassifier(random_state=42)
+        rf_grid = RandomForestClassifier(random_state=42, class_weight="balanced")
         gr_space = {
             "max_depth": [3, 5, 7, 10],
             "n_estimators": [100, 200, 300, 400, 500],
@@ -217,6 +258,10 @@ class DownstreamModel:
             "f1": "f1",
             "precision": "precision",
             "recall": "recall",
+            "roc_auc": "roc_auc",
+            "neg_log_loss": "neg_log_loss",
+            "average_precision": "average_precision",
+            "neg_brier_score": "neg_brier_score",
         }
 
         grid = RandomizedSearchCV(
@@ -226,14 +271,14 @@ class DownstreamModel:
             n_iter=30,
             cv=3,
             scoring=scoring,
-            refit="accuracy",
+            refit="roc_auc",
             verbose=3,
         )
 
         grid.fit(X, y)
         print("Random Forest model trained.")
         print(f"Best parameters: {grid.best_params_}")
-        print(f"Best cross-validation accuracy: {grid.best_score_}")
+        print(f"Best cross-validation score (ROC_AUC): {grid.best_score_}")
         print(f'CV results: {grid.cv_results_}')
         print(f"Feature importances: {grid.best_estimator_.feature_importances_}")
         print("Saving the trained model...")
@@ -298,14 +343,13 @@ class DownstreamModel:
 
 
 def roberta_classify_from_csv(file_path: str, api) -> None:
-    df = pd.read_csv(file_path, nrows=150000)
+    df = pd.read_csv(file_path)
     if "review" not in df.columns:
         raise ValueError("CSV file must contain a 'review' column.")
 
     if "id_review" not in df.columns:
         raise ValueError("CSV file must contain an 'id_review' column.")
 
-    def_length = len(df)
     roberta_detector = RobertaOpenAIDetector(api_key=api)
     sentiment_analyzer = RobertaSentimentAnalyzer()
     otis_spam_detector = OtisAntiSpamAI(api_key=api)
@@ -316,11 +360,8 @@ def roberta_classify_from_csv(file_path: str, api) -> None:
     list_detections = roberta_detector.classify_batch(texts)
     print("Fake/real detection completed.")
 
-    print("Processing sentiment analysis...")
-    list_sentiments = []
-    for i, text in enumerate(texts):
-        print(f"Processing sentiment {i + 1}/{def_length}")
-        list_sentiments.append(sentiment_analyzer.analyze(text))
+    print("Processing sentiment analysis in batch...")
+    list_sentiments = sentiment_analyzer.analyze_batch(texts)
     print("Sentiment analysis completed.")
 
     print("Processing spam detection in batch...")
