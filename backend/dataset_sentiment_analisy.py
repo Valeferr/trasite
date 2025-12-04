@@ -271,7 +271,7 @@ def roberta_classify_from_csv(file_path: str, api) -> None:
     if "id_room" in df.columns:
         frame["id_room"] = df["id_room"]
 
-    output_path = file_path.replace(".csv", "_classified.csv")
+    output_path = file_path.replace(".csv", "_processed.csv")
     frame.to_csv(output_path, index=False)
 
 

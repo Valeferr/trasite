@@ -2,9 +2,12 @@ import os
 import pandas as pd
 import numpy as np
 import torch
+from imblearn.over_sampling import SMOTE
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support, roc_auc_score
 import warnings
+
+
 
 from transformers import (
     AutoTokenizer, 
@@ -70,23 +73,16 @@ class FraudDetectorTrainer:
             print("CRITICAL ERROR: Only one class found. Cannot train classifier.")
             return
 
-        class_counts = df["labels"].value_counts()
-        minority_class = class_counts.idxmin()
-        majority_class = class_counts.idxmax()
-        n_minority = class_counts[minority_class]
-        n_majority = class_counts[majority_class]
-        
-        target_majority = max(int(n_majority * 0.2), n_minority)
-        target_majority = min(target_majority, n_majority)
-        
-        minority_df = df[df["labels"] == minority_class]
-        majority_df = df[df["labels"] == majority_class]
-        
-        if target_majority < n_majority:
-            print(f"Undersampling majority class to {target_majority}...")
-            majority_df = majority_df.sample(n=target_majority, random_state=42)
-        
-        df = pd.concat([minority_df, majority_df]).sample(frac=1, random_state=42).reset_index(drop=True)
+
+        X = df.drop("labels", axis=1)
+        y = df["labels"]
+
+        smote = SMOTE(random_state=42)
+        X_resampled, y_resampled = smote.fit_resample(X, y)
+
+        df = pd.concat([X_resampled, y_resampled], axis=1)
+        df = df.sample(frac=1, random_state=42).reset_index(drop=True)
+
         print(f"Final Balanced Distribution: {df['labels'].value_counts().to_dict()}")
 
         skf = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=42)
