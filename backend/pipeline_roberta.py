@@ -1,417 +1,243 @@
 import os
-import joblib
 import pandas as pd
-import torch
-import matplotlib as mpl
-import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.model_selection import RandomizedSearchCV
-from sklearn.ensemble import RandomForestClassifier
+import torch
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support, roc_auc_score
+import warnings
 
-from transformers import AutoModelForSequenceClassification
-from transformers import AutoTokenizer
-from transformers import pipeline
-from scipy.special import softmax
-from huggingface_hub import InferenceClient
+from transformers import (
+    AutoTokenizer, 
+    AutoModelForSequenceClassification, 
+    TrainingArguments, 
+    Trainer,
+    DataCollatorWithPadding,
+    pipeline,
+    EarlyStoppingCallback
+)
+from datasets import Dataset
 
-try:
-    from transformers import logging
-    mpl.use("module://mpl_ascii")
-    logging.set_verbosity_error()
-except ImportError:
-    pass
+warnings.filterwarnings("ignore")
+os.environ["WANDB_DISABLED"] = "true"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-
-class RobertaOpenAIDetector:
-    def __init__(self, api_key: str = None):
-        device = 0 if torch.cuda.is_available() else -1
-        self.pipe = pipeline(
-            "text-classification",
-            model="openai-community/roberta-base-openai-detector",
-            device=device
-        )
-
-    def classify(self, text: str) -> dict:
-        result = self.pipe(
-            text,
-            truncation=True,
-            max_length=512,
-        )[0]
-        label = str(result["label"]).lower()
-        score = float(result["score"])
-
-        if "real" in label:
-            real = score
-            fake = 1.0 - score
-        else:
-            fake = score
-            real = 1.0 - score
-
-        return {
-            "fake": fake,
-            "real": real,
-        }
-
-    def classify_batch(self, texts, batch_size: int = 32):
-        texts = list(texts)
-        total = len(texts)
-        results = []
-        for start in range(0, total, batch_size):
-            end = min(start + batch_size, total)
-            print(f"Processing fake/real {end}/{total}")
-            batch = texts[start:end]
-            outputs = self.pipe(
-                batch,
-                truncation=True,
-                max_length=512,
-                batch_size=batch_size
-            )
-            for result in outputs:
-                label = str(result["label"]).lower()
-                score = float(result["score"])
-                if "real" in label:
-                    real = score
-                    fake = 1.0 - score
-                else:
-                    fake = score
-                    real = 1.0 - score
-                results.append(
-                    {
-                        "fake": fake,
-                        "real": real,
-                    }
-                )
-        return results
-
-
-class RobertaSentimentAnalyzer:
-    def __init__(self):
+class FraudDetectorTrainer:
+    def __init__(self, model_name, base_output_dir="./backend/data/trained"):
+        self.model_name = model_name
+        safe_model_name = model_name.replace("/", "_")
+        self.output_dir = os.path.join(base_output_dir, safe_model_name)
+        
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model_name = "cardiffnlp/twitter-roberta-base-sentiment"
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        self.model = AutoModelForSequenceClassification.from_pretrained(
-            self.model_name
-        ).to(self.device)
-        self.model.eval()
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-    def analyze(self, text: str) -> dict:
-        encoded_input = self.tokenizer(
-            text,
-            return_tensors="pt",
-            truncation=True,
-            max_length=512,
-        ).to(self.device)
-        with torch.no_grad():
-            output = self.model(**encoded_input)
-        scores = output.logits[0].detach().cpu().numpy()
-        scores = softmax(scores)
+    def compute_metrics(self, pred):
+        labels = pred.label_ids
+        preds = pred.predictions.argmax(-1)
+        precision, recall, f1, _ = precision_recall_fscore_support(labels, preds, average='binary')
+        acc = accuracy_score(labels, preds)
+        
+        try:
+            probs = torch.nn.functional.softmax(torch.tensor(pred.predictions), dim=-1).numpy()
+            auc = roc_auc_score(labels, probs[:, 1])
+        except Exception:
+            auc = 0.0
+            
         return {
-            "negative": float(scores[0]),
-            "neutral": float(scores[1]),
-            "positive": float(scores[2]),
+            'accuracy': acc, 'f1': f1, 'precision': precision, 'recall': recall, 'roc_auc': auc
         }
 
-    def analyze_batch(self, texts, batch_size: int = 32) -> list:
-        texts = list(texts)
-        total = len(texts)
+    def train_cross_validation(self, csv_path: str, k_folds: int = 3):
+        print(f" TRAINING MODEL: {self.model_name}")
         
-        indexed_texts = sorted(enumerate(texts), key=lambda x: len(x[1]))
-        sorted_texts = [t for i, t in indexed_texts]
-        original_indices = [i for i, t in indexed_texts]
+        print(f"Loading data from {csv_path}...")
+        df = pd.read_csv(csv_path)
         
-        final_results = [None] * total
+        df = df.dropna(subset=['review', 'legit'])
+        
+        print(f"Raw 'legit' values found: {df['legit'].unique()}")
 
-        for start in range(0, total, batch_size):
-            end = min(start + batch_size, total)
-            print(f"Processing sentiment {end}/{total}")
+
+        def map_labels(x):
+            if x == -1: return 0
+            if x == 0: return 0 
+            return 1
             
-            batch_texts = sorted_texts[start:end]
-            batch_indices = original_indices[start:end]
+        df['labels'] = df['legit'].apply(map_labels)
+        
+        print(f"Mapped distribution (0=Fraud, 1=Legit): {df['labels'].value_counts().to_dict()}")
+        
+        if len(df['labels'].unique()) < 2:
+            print("CRITICAL ERROR: Only one class found. Cannot train classifier.")
+            return
+
+        class_counts = df["labels"].value_counts()
+        minority_class = class_counts.idxmin()
+        majority_class = class_counts.idxmax()
+        n_minority = class_counts[minority_class]
+        n_majority = class_counts[majority_class]
+        
+        target_majority = max(int(n_majority * 0.2), n_minority)
+        target_majority = min(target_majority, n_majority)
+        
+        minority_df = df[df["labels"] == minority_class]
+        majority_df = df[df["labels"] == majority_class]
+        
+        if target_majority < n_majority:
+            print(f"Undersampling majority class to {target_majority}...")
+            majority_df = majority_df.sample(n=target_majority, random_state=42)
+        
+        df = pd.concat([minority_df, majority_df]).sample(frac=1, random_state=42).reset_index(drop=True)
+        print(f"Final Balanced Distribution: {df['labels'].value_counts().to_dict()}")
+
+        skf = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=42)
+        cv_metrics = {'accuracy': [], 'f1': [], 'precision': [], 'recall': [], 'roc_auc': []}
+
+        def tokenize_function(examples):
+            return self.tokenizer(examples["review"], truncation=True, padding=False, max_length=512)
+
+        data_collator = DataCollatorWithPadding(tokenizer=self.tokenizer)
+
+        for fold, (train_idx, val_idx) in enumerate(skf.split(df, df['labels'])):
+            print(f"\n--- Model: {self.model_name} | Fold {fold + 1}/{k_folds} ---")
             
-            encoded_input = self.tokenizer(
-                batch_texts,
-                return_tensors="pt",
-                truncation=True,
-                padding=True,
-                max_length=512,
+            fold_output_dir = os.path.join(self.output_dir, f"fold_{fold+1}")
+            
+            train_df = df.iloc[train_idx]
+            eval_df = df.iloc[val_idx]
+            
+            train_dataset = Dataset.from_pandas(train_df[['review', 'labels']])
+            eval_dataset = Dataset.from_pandas(eval_df[['review', 'labels']])
+
+            tokenized_train = train_dataset.map(tokenize_function, batched=True)
+            tokenized_eval = eval_dataset.map(tokenize_function, batched=True)
+
+            model = AutoModelForSequenceClassification.from_pretrained(
+                self.model_name, num_labels=2
             ).to(self.device)
+
+            if "xsmall" in self.model_name:
+                batch_size = 16
+                grad_accum = 2
+            else:
+    
+                batch_size = 8
+                grad_accum = 4
             
-            with torch.no_grad():
-                output = self.model(**encoded_input)
+            training_args = TrainingArguments(
+                output_dir=fold_output_dir,
+                
+                eval_strategy="epoch",
+                save_strategy="epoch",
+                
+                learning_rate=2e-5,
+                
+                per_device_train_batch_size=batch_size, 
+                per_device_eval_batch_size=batch_size * 2,
+                gradient_accumulation_steps=grad_accum,
+                
+                num_train_epochs=3,
+                weight_decay=0.01,
+                
+                fp16=True,                   
+                optim="adamw_torch_fused",   
+                group_by_length=True,        
+                dataloader_num_workers=4,
+                
+                load_best_model_at_end=True,
+                metric_for_best_model="f1",
+                push_to_hub=False,
+                report_to="none"
+            )
+
+            trainer = Trainer(
+                model=model,
+                args=training_args,
+                train_dataset=tokenized_train,
+                eval_dataset=tokenized_eval,
+                tokenizer=self.tokenizer,
+                data_collator=data_collator,
+                compute_metrics=self.compute_metrics,
+                callbacks=[EarlyStoppingCallback(early_stopping_patience=2)]
+            )
+
+            trainer.train()
             
-            scores_batch = output.logits.detach().cpu().numpy()
-            scores_batch = softmax(scores_batch, axis=1)
+            eval_results = trainer.evaluate()
+            print(f"Fold {fold + 1} Results: {eval_results}")
+            
+            for key in cv_metrics.keys():
+                cv_metrics[key].append(eval_results.get(f"eval_{key}", 0.0))
+            
+            if fold == k_folds - 1:
+                print(f"Saving final model for {self.model_name}...")
+                trainer.save_model(self.output_dir)
+                self.tokenizer.save_pretrained(self.output_dir)
+            
+            del model
+            del trainer
+            torch.cuda.empty_cache()
 
-            for i, scores in enumerate(scores_batch):
-                original_idx = batch_indices[i]
-                final_results[original_idx] = {
-                    "negative": float(scores[0]),
-                    "neutral": float(scores[1]),
-                    "positive": float(scores[2]),
-                }
+        avg_metrics = {k: np.mean(v) for k, v in cv_metrics.items()}
+        print(f"\n=== Average Results for {self.model_name} ===")
+        print(avg_metrics)
         
-        return final_results
+        results_df = pd.DataFrame([avg_metrics])
+        if not os.path.exists(self.output_dir):
+            os.makedirs(self.output_dir)
+        results_df.to_csv(os.path.join(self.output_dir, "cv_results.csv"), index=False)
 
+    def predict_from_csv(self, input_csv: str, output_csv: str):
+        if not os.path.exists(self.output_dir):
+            raise ValueError(f"Model not found at {self.output_dir}")
 
-class OtisAntiSpamAI:
-    def __init__(self, api_key: str):
-        device = 0 if torch.cuda.is_available() else -1
-        self.client = InferenceClient(
-            provider="hf-inference",
-            api_key=api_key,
-        )
-        self.pipe = pipeline(
-            "text-classification",
-            model="Titeiiko/OTIS-Official-Spam-Model",
-            device=device
-        )
-
-    def classify(self, text: str) -> dict:
-        x = self.pipe(
-            text,
-            truncation=True,
-            max_length=512,
-        )[0]
-        return {
-            "spam": 1 - x["score"],
-            "no_spam": x["score"],
-        }
-
-    def classify_batch(self, texts, batch_size: int = 32):
-        texts = list(texts)
-        total = len(texts)
-        results = []
-        for start in range(0, total, batch_size):
-            end = min(start + batch_size, total)
-            print(f"Processing spam {end}/{total}")
-            batch = texts[start:end]
-            outputs = self.pipe(
-                batch,
-                truncation=True,
-                max_length=512,
-                batch_size=batch_size
-            )
-            for out in outputs:
-                score = out["score"]
-                results.append(
-                    {
-                        "spam": 1 - score,
-                        "no_spam": score,
-                    }
-                )
-        return results
-
-
-class DownstreamModel:
-    def plot(self, data: pd.DataFrame, plot_path: str = None) -> None:
-        vc = data["legit"].value_counts()
-        vc.plot(kind="bar")
-        if plot_path is not None:
-            plt.savefig(plot_path)
-        plt.show()
+        print(f"Running inference using {self.model_name}...")
         
-        plt.close()
+        clf_pipe = pipeline("text-classification", model=self.output_dir, device=0 if torch.cuda.is_available() else -1, truncation=True, max_length=512)
+        
+        df = pd.read_csv(input_csv)
+        texts = df['review'].astype(str).tolist()
+        
+        predictions = clf_pipe(texts, batch_size=32)
+        
+        final_labels = []
+        final_scores = []
+        
+        for p in predictions:
+            label_str = p['label']
+            if "LABEL_" in label_str:
+                label_id = int(label_str.split('_')[-1])
+            else:
+                label_id = 1 if label_str.lower() in ['legit', '1', 'pos'] else 0
+                
+            final_labels.append(label_id)
+            final_scores.append(p['score'])
 
-    def train(self, data: pd.DataFrame, save_path: str, show_plot: bool = False, plot_path: str = None) -> RandomizedSearchCV:
-        data = data.copy()
-        class_counts = data["legit"].value_counts()
-        if len(class_counts) == 2:
-            minority_class = class_counts.idxmin()
-            majority_class = class_counts.idxmax()
-            n_minority = class_counts[minority_class]
-            n_majority = class_counts[majority_class]
-            target_majority = max(int(n_majority * 0.7), n_minority)
-            target_majority = min(target_majority, n_majority)
-            minority_df = data[data["legit"] == minority_class]
-            majority_df = data[data["legit"] == majority_class]
-            if target_majority < n_majority:
-                majority_df = majority_df.sample(n=target_majority, random_state=42)
-            data = pd.concat([minority_df, majority_df]).sample(frac=1, random_state=42).reset_index(drop=True)
+        df['predicted_label'] = final_labels
+        df['prediction_confidence'] = final_scores
+        
+        df.to_csv(output_csv, index=False)
+        print(f"Saved predictions to {output_csv}")
 
-        np.random.seed(42)
+def main(): 
+    train_file = "./backend/data/yelp_dataset.csv" 
+    predict_file = "./backend/data/reviews_en_clean.csv"
 
-        if show_plot:
-            self.plot(data, plot_path=plot_path)
+    models_to_run = [
+        "distilroberta-base",
+        "microsoft/deberta-v3-xsmall"
+    ]
 
-        features = [
-            "fake",
-            "real",
-            "negative",
-            "neutral",
-            "positive",
-            "spam",
-            "no_spam",
-        ]
-        X = data[features]
-        y = data["legit"]
-
-        rf_grid = RandomForestClassifier(random_state=42, class_weight="balanced")
-        gr_space = {
-            "max_depth": [3, 5, 7, 10],
-            "n_estimators": [100, 200, 300, 400, 500],
-            "max_features": ["sqrt", "log2", None],
-            "min_samples_leaf": [1, 2, 4],
-        }
-
-        scoring = {
-            "accuracy": "accuracy",
-            "f1": "f1",
-            "precision": "precision",
-            "recall": "recall",
-            "roc_auc": "roc_auc",
-            "neg_log_loss": "neg_log_loss",
-            "average_precision": "average_precision",
-            "neg_brier_score": "neg_brier_score",
-        }
-
-        grid = RandomizedSearchCV(
-            estimator=rf_grid,
-            param_distributions=gr_space,
-            random_state=42,
-            n_iter=30,
-            cv=3,
-            scoring=scoring,
-            refit="roc_auc",
-            verbose=3,
-        )
-
-        grid.fit(X, y)
-        print("Random Forest model trained.")
-        print(f"Best parameters: {grid.best_params_}")
-        print(f"Best cross-validation score (ROC_AUC): {grid.best_score_}")
-        print(f'CV results: {grid.cv_results_}')
-        print(f"Feature importances: {grid.best_estimator_.feature_importances_}")
-        print("Saving the trained model...")
-        self.save(grid, save_path)
-
-        return grid
-
-    def save(self, model, path: str) -> None:
-        best_rf_model = model.best_estimator_
-        directory = os.path.dirname(path)
-        if directory:
-            os.makedirs(directory, exist_ok=True)
-        joblib.dump(best_rf_model, path)
-        print(f"Model saved as '{path}'")
-
-    def load(self, path: str):
-        if not os.path.exists(path):
-            raise FileNotFoundError(
-                f"The specified path '{path}' does not exist."
-            )
-        return joblib.load(path)
-
-    def predict_from_csv(
-        self,
-        model_file_path: str,
-        roberta_output_file_path: str,
-        train_file_path: str,
-    ) -> pd.DataFrame:
-        if not os.path.exists(model_file_path):
-            data = pd.read_csv(train_file_path)
-            self.train(data, save_path=model_file_path)
-
-        model = self.load(model_file_path)
-        predict_data = pd.read_csv(roberta_output_file_path)
-
-        features = [
-            "fake",
-            "real",
-            "negative",
-            "neutral",
-            "positive",
-            "spam",
-            "no_spam",
-        ]
-        X_pred = predict_data[features]
-        y_pred = model.predict(X_pred)
-
-        frame = pd.DataFrame(
-            {
-                "id_review": predict_data["id_review"],
-                "id_room": predict_data["id_room"],
-                "legit": y_pred,
-            }
-        )
-
-        output_path = roberta_output_file_path.replace(
-            ".csv", "_predicted.csv"
-        )
-        frame.to_csv(output_path, index=False)
-
-        return frame
-
-
-def roberta_classify_from_csv(file_path: str, api) -> None:
-    df = pd.read_csv(file_path)
-    if "review" not in df.columns:
-        raise ValueError("CSV file must contain a 'review' column.")
-
-    if "id_review" not in df.columns:
-        raise ValueError("CSV file must contain an 'id_review' column.")
-
-    roberta_detector = RobertaOpenAIDetector(api_key=api)
-    sentiment_analyzer = RobertaSentimentAnalyzer()
-    otis_spam_detector = OtisAntiSpamAI(api_key=api)
-
-    texts = df["review"].tolist()
-
-    print("Processing fake/real detection in batch...")
-    list_detections = roberta_detector.classify_batch(texts)
-    print("Fake/real detection completed.")
-
-    print("Processing sentiment analysis in batch...")
-    list_sentiments = sentiment_analyzer.analyze_batch(texts)
-    print("Sentiment analysis completed.")
-
-    print("Processing spam detection in batch...")
-    spam_results = otis_spam_detector.classify_batch(texts)
-    print("Spam detection completed.")
-
-    frame = pd.DataFrame(
-        {
-            "id_review": df["id_review"],
-            "review": df["review"],
-            "fake": [d["fake"] for d in list_detections],
-            "real": [d["real"] for d in list_detections],
-            "negative": [s["negative"] for s in list_sentiments],
-            "neutral": [s["neutral"] for s in list_sentiments],
-            "positive": [s["positive"] for s in list_sentiments],
-            "spam": [s["spam"] for s in spam_results],
-            "no_spam": [s["no_spam"] for s in spam_results],
-        }
-    )
-
-    if "legit" in df.columns:
-        frame["legit"] = [True if l == 1 else False for l in df["legit"]]
-
-    if "id_room" in df.columns:
-        frame["id_room"] = df["id_room"]
-
-    output_path = file_path.replace(".csv", "_classified.csv")
-    frame.to_csv(output_path, index=False)
-
-
-def main():
-    API_KEY = os.getenv("HF_API_KEY")
-    if not API_KEY:
-        raise ValueError("HF_API_KEY environment variable not set.")
-    roberta_classify_from_csv("./backend/data/yelp_dataset.csv", api=API_KEY)
-    downstream_model = DownstreamModel()
-    downstream_model.train(
-        data=pd.read_csv("./backend/data/yelp_dataset_classified.csv"),
-        save_path="./backend/data/trained/downstream_rf_model.joblib",
-        show_plot=True
-    )
-
-    roberta_classify_from_csv("./backend/data/reviews_en_clean.csv", api=API_KEY)
-
-    downstream_model.predict_from_csv(
-        model_file_path="./backend/data/trained/downstream_rf_model.joblib",
-        roberta_output_file_path="./backend/data/reviews_en_clean_classified.csv",
-        train_file_path="./backend/data/yelp_dataset_classified.csv"
-    )
-
+    for model_name in models_to_run:
+        if os.path.exists(train_file):
+            detector = FraudDetectorTrainer(model_name=model_name)
+            detector.train_cross_validation(train_file, k_folds=3)
+            
+            if os.path.exists(predict_file):
+                safe_name = model_name.replace("/", "_")
+                output_file = f"./backend/data/reviews_classified_{safe_name}.csv"
+                detector.predict_from_csv(predict_file, output_file)
+        else:
+            print(f"Training file {train_file} not found.")
 
 if __name__ == "__main__":
     main()

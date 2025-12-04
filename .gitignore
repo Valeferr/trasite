@@ -14,6 +14,7 @@ Desktop.ini
 # VS CODE (IDE)
 .vscode/
 .history/
+backend/data/
 
 # PYTHON (Backend/AI)
 __pycache__/
