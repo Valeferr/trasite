@@ -209,6 +209,7 @@ class TextBlobSubjectivityAnalyzer:
     def analyze_batch(self, texts) -> list:
         results = []
         for text in texts:
+            print(f"Processing subjectivity {len(results)+1}/{len(texts)}")
             blob = self.text_blob(text)
             results.append(float(blob.sentiment.subjectivity))
         return results
