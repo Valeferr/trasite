@@ -2,8 +2,6 @@ import os
 import pandas as pd
 import torch
 import matplotlib as mpl
-from sklearn.model_selection import RandomizedSearchCV
-from sklearn.ensemble import RandomForestClassifier
 from textblob import TextBlob
 from transformers import AutoModelForSequenceClassification
 from transformers import AutoTokenizer
@@ -12,7 +10,7 @@ from scipy.special import softmax
 from huggingface_hub import InferenceClient
 
 try:
-    from transformers import logging
+    from transformers import logging 
     mpl.use("module://mpl_ascii")
     logging.set_verbosity_error()
 except ImportError:
