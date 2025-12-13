@@ -59,20 +59,50 @@ class YelpFraudDetector:
 
         return train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
 
+    @staticmethod
+    def _minority_majority_ratio(y):
+        value_counts = pd.Series(y).value_counts(dropna=False)
+        if len(value_counts) < 2:
+            return None
+        majority = value_counts.max()
+        minority = value_counts.min()
+        if majority == 0:
+            return None
+        return float(minority) / float(majority)
+
     def train(self, X_train, y_train, balance_method='original', model_type='logreg'):
         start_time = time.time()
         print(f"\n>>> TRAINING START: Model=[{model_type.upper()}] | Strategy=[{balance_method.upper()}]")
         
         steps = []
         
-        # 1. Sampling
-        if balance_method == 'undersample':
-            steps.append(('sampler', RandomUnderSampler(sampling_strategy=0.5, random_state=42)))
-        elif balance_method == 'oversample':
-            steps.append(('sampler', RandomOverSampler(sampling_strategy=0.5, random_state=42)))
+        majority_to_minority = 2.0
+        desired_ratio = 1.0 / majority_to_minority
+        n_classes = pd.Series(y_train).nunique(dropna=False)
+        current_ratio = self._minority_majority_ratio(y_train)
+
+        if balance_method in {'undersample', 'oversample'}:
+            if n_classes > 2:
+                strategy = 'auto'
+                if balance_method == 'undersample':
+                    steps.append(('sampler', RandomUnderSampler(sampling_strategy=strategy, random_state=42)))
+                else:
+                    steps.append(('sampler', RandomOverSampler(sampling_strategy=strategy, random_state=42)))
+            else:
+                if current_ratio is None:
+                    print("Sampling skipped: not enough class variation in y_train")
+                elif current_ratio >= desired_ratio:
+                    print(
+                        f"Sampling skipped: current minority/majority ratio={current_ratio:.3f} >= target {desired_ratio:.3f}"
+                    )
+                else:
+                    if balance_method == 'undersample':
+                        steps.append(('sampler', RandomUnderSampler(sampling_strategy=desired_ratio, random_state=42)))
+                    else:
+                        steps.append(('sampler', RandomOverSampler(sampling_strategy=desired_ratio, random_state=42)))
         
-        # 2. Preprocessing
-        steps.append(('scaler', PowerTransformer())) # PowerTransformer is better for skewed data
+   
+        steps.append(('scaler', PowerTransformer()))
         steps.append(('selector', SelectKBest(score_func=f_classif)))
 
         param_dist = []
@@ -150,7 +180,8 @@ class YelpFraudDetector:
         return score
 
 def main():
-    csv_file = './backend/data/yelp_reviews_merged_features.csv'
+    prefix = 'deceptive'
+    csv_file = f'./backend/data/{prefix}_reviews_merged_features.csv'
     detector = YelpFraudDetector(csv_file)
     
     try:
