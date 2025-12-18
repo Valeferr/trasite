@@ -278,7 +278,8 @@ def main():
     API_KEY = os.getenv("HF_API_KEY")
     if not API_KEY:
         raise ValueError("HF_API_KEY environment variable not set.")
-    roberta_classify_from_csv("./backend/data/yelp_dataset.csv", api=API_KEY)
+    prefix = 'deceptive'
+    roberta_classify_from_csv(f"./backend/data/{prefix}_dataset.csv", api=API_KEY)
 
 
 if __name__ == "__main__":

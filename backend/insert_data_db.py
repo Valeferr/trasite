@@ -21,9 +21,9 @@ def insert_aggregated_mongo_db(aggregated_legit_data: pd.DataFrame) -> None:
     print(dbname)
     collection_name = dbname["trasite"]
     for _, row in aggregated_legit_data.iterrows():
-
+        id_room = row['id_room']
         data.append({
-            "id_room": row['id_room'],
+            "id_room": id_room,
             "legit_count": int(row['legit_count']),
             "fake_count": int(row['fake_count']),
             "latitude": row.get('latitude', None),
@@ -35,7 +35,8 @@ def insert_aggregated_mongo_db(aggregated_legit_data: pd.DataFrame) -> None:
             "reviews_per_month": row.get('reviews_per_month', None),
             "host_id": row.get('host_id', None),
             "host_name": row.get('host_name', None),
-            "price": row.get('price', None)
+            "price": row.get('price', None),
+            "fake_reviews": get_fake_reviews_by_room(aggregated_legit_data, id_room)
         })
     collection_name.insert_many(data)
     
@@ -48,6 +49,10 @@ def legit_data_from_csv(file_path: str) -> pd.DataFrame:
         legit_count='sum',
         fake_count=lambda x: x.size - x.sum()
     ).reset_index()
+
+def get_fake_reviews_by_room(frame: pd.DataFrame, id_room: int) -> pd.DataFrame:
+    fake_reviews = frame[(frame['id_room'] == id_room) & (frame['legit'] == False)]
+    return fake_reviews
 
 def load_geo_data_from_csv(file_path: str) -> pd.DataFrame:
     geo_frame = pd.read_csv(file_path)
