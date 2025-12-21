@@ -231,7 +231,7 @@ def main():
         print("\n" + "*"*60)
         print(f"CHAMPION: {global_best_info['Model']} ({global_best_info['Strategy']})")
         print(f"F1 Score: {global_best_score:.4f}")
-        print(f"\n🏆 FEATURES ({len(global_best_info['Features'])}):")
+        print(f"\n FEATURES ({len(global_best_info['Features'])}):")
         print(global_best_info['Features'])
         print("*"*60)
 
