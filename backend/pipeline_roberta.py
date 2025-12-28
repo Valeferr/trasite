@@ -83,7 +83,6 @@ def report_split(trainer: Trainer, dataset: Dataset, split_name: str, label_name
     y_true = out.label_ids
     y_pred = np.argmax(logits, axis=-1)
 
-
     hf_metrics = dict(out.metrics) if out.metrics is not None else {}
     try:
         probs = softmax_np(logits, axis=-1)
@@ -152,34 +151,53 @@ class FraudDetectorTrainer:
         return {"accuracy": acc, "f1": f1, "precision": precision, "recall": recall, "roc_auc": auc}
 
     @staticmethod
-    def _apply_resampling(train_df: pd.DataFrame, strategy: ResampleStrategy, seed: int = 42) -> pd.DataFrame:
+    def _apply_resampling(
+        train_df: pd.DataFrame,
+        strategy: ResampleStrategy,
+        seed: int = 42,
+        fraud_to_legit_ratio: float = 0.5,
+    ) -> pd.DataFrame:
         if strategy == ResampleStrategy.NONE:
             return train_df.sample(frac=1, random_state=seed).reset_index(drop=True)
 
+        if fraud_to_legit_ratio is None:
+            fraud_to_legit_ratio = 0.5
+
+        r = float(fraud_to_legit_ratio)
+        if not np.isfinite(r) or r <= 0:
+            raise ValueError("fraud_to_legit_ratio must be a finite number > 0 (e.g., 0.5 for 1:2, 1.0 for 1:1).")
+
         X = train_df[["review"]]
         y = train_df["labels"]
-    
-        # Calculate counts
-        n_fraud = len(y[y == 0])
-        n_legit = len(y[y == 1])
 
-        # We want Ratio 1:2 (Fraud : Legit)
-        # This means Fraud should be 0.5 * Legit
-    
-        sampling_strat = {}
+        n_fraud = int((y == 0).sum())
+        n_legit = int((y == 1).sum())
+
+        if n_fraud == 0 or n_legit == 0:
+            return train_df.sample(frac=1, random_state=seed).reset_index(drop=True)
 
         if strategy == ResampleStrategy.OVER:
-            # For Oversampling: We boost Fraud (minority) to be half of Legit (majority)
-            target_fraud = int(n_legit * 0.5)
-            sampling_strat = {0: target_fraud, 1: n_legit}
+            if (n_fraud / n_legit) < r:
+                target_fraud = int(np.ceil(r * n_legit))
+                target_legit = n_legit
+            else:
+                target_fraud = n_fraud
+                target_legit = int(np.ceil(n_fraud / r))
+
+            sampling_strat = {0: max(n_fraud, target_fraud), 1: max(n_legit, target_legit)}
             sampler = RandomOverSampler(sampling_strategy=sampling_strat, random_state=seed)
-        
+
         elif strategy == ResampleStrategy.UNDER:
-            # For Undersampling: We cut Legit (majority) to be double of Fraud (minority)
-            target_legit = int(n_fraud * 2.0)
-            sampling_strat = {0: n_fraud, 1: target_legit}
+            if (n_fraud / n_legit) < r:
+                target_fraud = n_fraud
+                target_legit = int(np.floor(n_fraud / r))
+            else:
+                target_legit = n_legit
+                target_fraud = int(np.floor(r * n_legit))
+
+            sampling_strat = {0: min(n_fraud, target_fraud), 1: min(n_legit, target_legit)}
             sampler = RandomUnderSampler(sampling_strategy=sampling_strat, random_state=seed)
-        
+
         else:
             return train_df.sample(frac=1, random_state=seed).reset_index(drop=True)
 
@@ -192,6 +210,7 @@ class FraudDetectorTrainer:
         csv_path: str,
         resample_strategy: ResampleStrategy = ResampleStrategy.NONE,
         seed: int = 42,
+        fraud_to_legit_ratio: float = 0.5,
     ):
         set_seed(seed)
         np.random.seed(seed)
@@ -249,8 +268,14 @@ class FraudDetectorTrainer:
         print(f"Val   distribution: {val_df['labels'].value_counts().to_dict()}")
         print(f"Test  distribution: {test_df['labels'].value_counts().to_dict()}")
         print(f"Resampling strategy: {resample_strategy.value}")
+        print(f"Fraud:Legit target ratio: {fraud_to_legit_ratio}:1 (Fraud/Legit={fraud_to_legit_ratio})")
 
-        train_df = self._apply_resampling(train_df, resample_strategy, seed=seed)
+        train_df = self._apply_resampling(
+            train_df,
+            resample_strategy,
+            seed=seed,
+            fraud_to_legit_ratio=fraud_to_legit_ratio,
+        )
         print(f"Train distribution (post-resample): {train_df['labels'].value_counts().to_dict()}")
 
         def tokenize_function(examples):
@@ -300,7 +325,7 @@ class FraudDetectorTrainer:
             fp16=use_cuda,
             optim=optim_choice,
             group_by_length=True,
-            dataloader_num_workers=0,  # safer on Windows
+            dataloader_num_workers=0,
             load_best_model_at_end=True,
             metric_for_best_model="f1",
             save_total_limit=2,
@@ -336,7 +361,7 @@ class FraudDetectorTrainer:
         row = {
             "model": self.model_name,
             "resample_strategy": resample_strategy.value,
-
+            "fraud_to_legit_ratio": float(fraud_to_legit_ratio),
             **{f"val_{k}": v for k, v in val_summary.items()},
             **{f"test_{k}": v for k, v in test_summary.items()},
         }
@@ -393,7 +418,7 @@ def main():
         "microsoft/deberta-v3-xsmall",
     ]
 
-    resampling = ResampleStrategy.OVER
+    resampling = ResampleStrategy.UNDER
 
     for model_name in models_to_run:
         if os.path.exists(train_file):
@@ -403,6 +428,7 @@ def main():
                 train_file,
                 resample_strategy=resampling,
                 seed=42,
+                fraud_to_legit_ratio=1.0,
             )
 
             if os.path.exists(predict_file):
