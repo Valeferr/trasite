@@ -88,6 +88,20 @@ def get_legit_fake_count(host_id: int):
 
     return result
 
+@app.get("/room/")
+def get_legit_fake_count(room_id: int):
+    collection = get_collection()
+
+    result = collection.find_one(
+        {"id_room": room_id},
+        {
+            "_id": 0,
+            "fake_reviews": 1
+        }
+    )
+
+    return result
+
 @app.get("/distance/")
 def get_near_structure(
     lat: float,
