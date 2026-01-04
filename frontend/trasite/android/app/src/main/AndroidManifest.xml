@@ -2,7 +2,8 @@
     <application
         android:label="trasite"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:clearTaskOnLaunch="true">
         <activity
             android:name=".MainActivity"
             android:exported="true"
