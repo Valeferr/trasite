@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from pymongo import MongoClient
 from pymongo.collection import Collection
 import certifi
+from fastapi.middleware.cors import CORSMiddleware
 
 class Trasite(TypedDict):
     id_room: int
@@ -30,6 +31,14 @@ CONNECTION_STRING: Optional[str] = os.environ.get("CONNECTION_STRING")
 
 if not CONNECTION_STRING:
     exit("ERROR: CONNECTION_STRING environment variable not found.")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 def get_collection() -> Collection[Trasite]:
     client = MongoClient(
