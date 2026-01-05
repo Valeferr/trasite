@@ -22,8 +22,8 @@ class AirbnbListing {
   });
 
   factory AirbnbListing.fromJson(Map<String, dynamic> json) {
-    final int legit = json['legit_count'] ?? 0;
-    final int fake = json['fake_count'] ?? 0;
+    final int legit = (json['legit_count'] as num?)?.toInt() ?? 0;
+    final int fake = (json['fake_count'] as num?)?.toInt() ?? 0;
     final int totalReviews = legit + fake;
 
     double score = totalReviews > 0 ? legit / totalReviews : 0.0;
@@ -39,7 +39,7 @@ class AirbnbListing {
       realReviews: legit,
       fakeReviews: fake,
       hostName: json['host_name'] ?? 'Host Sconosciuto',
-      price: json['price'] ?? 0,
+      price: (json['price'] as num?)?.toInt() ?? 0,
     );
   }
 }
