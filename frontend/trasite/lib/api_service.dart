@@ -10,9 +10,9 @@ class ApiService {
     if (kIsWeb) {
       return "http://localhost:8000"; // Web
     } else if (defaultTargetPlatform == TargetPlatform.android) {
-      return "http://192.168.1.15:8000"; // Emulatore Android
+      return "http://10.0.2.2:8000"; // Emulatore Android
     } else {
-      return "http://192.168.1.15:8000"; // iOS o Desktop
+      return "http://127.0.0.1:8000"; // iOS o Desktop
     }
   }
 
