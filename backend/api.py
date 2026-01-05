@@ -34,7 +34,7 @@ if not CONNECTION_STRING:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|192\.168\.1\.(?:[0-9]{1,3}))(?::\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
